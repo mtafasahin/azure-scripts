@@ -1,0 +1,34 @@
+[Azure]
+# Azure DevOps organization name
+organization = YOUR_ORGANIZATION_NAME
+
+# Project name in Azure DevOps
+project = YOUR_PROJECT_NAME
+
+# Team name in the project
+team = YOUR_TEAM_NAME
+
+# Personal Access Token (PAT) for authentication
+# Generate from: https://dev.azure.com/[your-org]/_usersSettings/tokens
+# Leave empty to use .env file or environment variable
+pat = 
+
+[Analysis]
+# Default sprint to analyze if not specified in command line
+default_sprint = 51
+
+# Number of working days in a sprint (for capacity calculation)
+working_days = 9
+
+# Show debug information (true/false)
+debug = false
+
+[Output]
+# Maximum number of projects to show in connectivity test
+max_projects_display = 10
+
+# Column widths for output formatting
+sprint_column_width = 15
+activity_column_width = 20
+numeric_column_width = 20
+resource_need_column_width = 20
