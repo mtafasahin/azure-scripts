@@ -88,6 +88,11 @@ Araç şu bilgileri gösterir:
    - Her sprint için toplam kaynak eksikliği
    - Aktivite bazında detaylı liste
 
+4. **Aktivite Bazında Sprint Dağılımı**:
+   - Her aktivite için hangi sprintlerde kaynak ihtiyacı var
+   - Sprint bazında ihtiyaç miktarları
+   - Aktivite toplam ihtiyaçları
+
 ## ⚙️ Konfigürasyon
 
 ### config.ini Seçenekleri
@@ -154,6 +159,28 @@ Sprint         Activity             İhtiyaç (saat)
 Sprint 51      TOPLAM              179.0
                Development         163.0
                UI Development      16.0
+
+📊 Aktivite Bazında Kaynak İhtiyaçları:
+Activity           Sprint               İhtiyaç (saat)
+----------------------------------------------------
+
+Development        TOPLAM              200.0
+                   Sprint 51           163.0
+                   Sprint 52            37.0
+
+UI Development     TOPLAM              116.0
+                   Sprint 52            80.0
+                   Sprint 50            20.0
+                   Sprint 51            16.0
+
+Testing            TOPLAM              110.0
+                   Sprint 52           110.0
+
+Requirements       TOPLAM               12.0
+                   Sprint 51            12.0
+
+Code Review        TOPLAM                1.0
+                   Sprint 51             1.0
 ```
 
 ## 📝 Notlar

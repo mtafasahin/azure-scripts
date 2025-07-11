@@ -411,3 +411,38 @@ if __name__ == "__main__":
                     print(f"{'':>15}{item['Activity']:<20}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
         else:
             print(f"{Colors.GREEN}✅ Hiçbir sprintte kaynak ihtiyacı yok!{Colors.RESET}")
+        
+        # Aktivite bazında kaynak ihtiyaçları özeti
+        print(f"\n📊 Aktivite Bazında Kaynak İhtiyaçları:")
+        
+        # Aktivite bazında grupla
+        activity_needs = {}
+        for result in all_results:
+            if result['Resource Need (h)'] > 0:  # Sadece ihtiyaç olanları göster
+                activity = result['Activity']
+                if activity not in activity_needs:
+                    activity_needs[activity] = []
+                activity_needs[activity].append({
+                    'Sprint': result['Sprint'],
+                    'Need': result['Resource Need (h)']
+                })
+        
+        if activity_needs:
+            print(f"{'Activity':<20}{'Sprint':<15}{'İhtiyaç (saat)':>15}")
+            print("-" * 50)
+            
+            # Toplam ihtiyaca göre aktiviteleri sırala
+            activity_totals = {}
+            for activity, items in activity_needs.items():
+                activity_totals[activity] = sum(item['Need'] for item in items)
+            
+            for activity in sorted(activity_totals.keys(), key=lambda x: activity_totals[x], reverse=True):
+                # Aktivite başına toplam ihtiyaç
+                activity_total = activity_totals[activity]
+                print(f"\n{Colors.BOLD}{activity:<20}{'TOPLAM':<15}{Colors.RED}{activity_total:.1f}{Colors.RESET}")
+                
+                # Sprint bazında detaylar (ihtiyaca göre sıralı)
+                for item in sorted(activity_needs[activity], key=lambda x: x['Need'], reverse=True):
+                    print(f"{'':>20}{item['Sprint']:<15}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
+        else:
+            print(f"{Colors.GREEN}✅ Hiçbir aktivitede kaynak ihtiyacı yok!{Colors.RESET}")
