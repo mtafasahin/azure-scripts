@@ -313,11 +313,165 @@ def parse_sprint_range(sprint_range):
     else:
         return [int(sprint_range)]
 
+# Kişi bazında kapasite analizi
+def get_team_members_capacity(iteration_id):
+    """Her takım üyesi için kapasite bilgilerini al"""
+    url = f"{base_url}/{project_encoded}/{team_encoded}/_apis/work/teamsettings/iterations/{iteration_id}/capacities?api-version=7.0"
+    if settings['debug']:
+        print(f"Debug: Getting team members capacity from URL: {url}")
+    res = requests.get(url, headers=headers)
+    if settings['debug']:
+        print(f"Debug: Team capacity response status: {res.status_code}")
+    res.raise_for_status()
+
+    response_data = res.json()
+    members_capacity = {}
+    
+    # Handle both direct list and value wrapper
+    members = response_data if isinstance(response_data, list) else response_data.get("value", [])
+    
+    # If there's a teamMembers wrapper, use that
+    if "teamMembers" in response_data:
+        members = response_data["teamMembers"]
+    
+    for member in members:
+        if isinstance(member, dict):
+            display_name = member["teamMember"]["displayName"]
+            activities = member.get("activities", [])
+            
+            if display_name not in members_capacity:
+                members_capacity[display_name] = {}
+            
+            for activity in activities:
+                if isinstance(activity, dict):
+                    activity_name = activity.get("name", "Unknown")
+                    capacity_per_day = activity.get("capacityPerDay", 0)
+                    total_capacity = capacity_per_day * settings['working_days']
+                    members_capacity[display_name][activity_name] = total_capacity
+                    
+                    if settings['debug']:
+                        print(f"Debug: {display_name} - {activity_name}: {capacity_per_day}/day * {settings['working_days']} = {total_capacity}h total")
+    
+    return members_capacity
+
+def get_work_hours_by_member_and_activity(work_item_ids):
+    """Work item'ları member ve aktiviteye göre grupla"""
+    chunks = [work_item_ids[i:i+200] for i in range(0, len(work_item_ids), 200)]
+    work_by_member_activity = defaultdict(lambda: defaultdict(float))
+
+    for chunk in chunks:
+        ids_str = ",".join(map(str, chunk))
+        url = f"{base_url}/{project_encoded}/_apis/wit/workitems?ids={ids_str}&fields=System.AssignedTo,Microsoft.VSTS.Common.Activity,Microsoft.VSTS.Scheduling.OriginalEstimate&api-version=7.0"
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        
+        for item in res.json()["value"]:
+            fields = item.get("fields", {})
+            
+            # Assigned To field'ından kişi adını al
+            assigned_to = fields.get("System.AssignedTo")
+            if assigned_to and isinstance(assigned_to, dict):
+                member_name = assigned_to.get("displayName", "Unassigned")
+            else:
+                member_name = "Unassigned"
+            
+            activity = fields.get("Microsoft.VSTS.Common.Activity", "Unknown")
+            hours = fields.get("Microsoft.VSTS.Scheduling.OriginalEstimate", 0)
+            
+            if hours and hours > 0:
+                work_by_member_activity[member_name][activity] += hours
+                
+                if settings['debug']:
+                    print(f"Debug: {member_name} - {activity}: +{hours}h")
+    
+    return work_by_member_activity
+
+def generate_capacity_report(sprint_numbers, all_results):
+    """Kişi bazında kapasite raporu oluştur"""
+    print(f"\n👥 Kişi Bazında Kapasite Analizi:")
+    print("=" * 90)
+    
+    for sprint_num in sprint_numbers:
+        sprint_name = f"Sprint {sprint_num}"
+        print(f"\n📋 {sprint_name}:")
+        print("-" * 90)
+        
+        try:
+            # Sprint bilgilerini al
+            iteration_id, iteration_path = get_iteration_id(sprint_name)
+            
+            # Kişi bazında kapasiteleri al
+            members_capacity = get_team_members_capacity(iteration_id)
+            
+            # Work item'ları al
+            work_ids = get_work_items_ids(iteration_path)
+            
+            # Kişi ve aktivite bazında planlanan işleri al
+            work_by_member = get_work_hours_by_member_and_activity(work_ids)
+            
+            # Tüm kişileri topla (hem kapasite hem work'te olanları)
+            all_members = set(members_capacity.keys()) | set(work_by_member.keys())
+            
+            print(f"{'Kişi':<25}{'Aktivite':<20}{'Kapasite (h)':>15}{'Planlanan (h)':>15}{'Yüklenme (%)':>15}")
+            print("-" * 90)
+            
+            for member in sorted(all_members):
+                member_total_capacity = 0
+                member_total_planned = 0
+                
+                # Bu kişinin tüm aktivitelerini topla
+                activities = set()
+                if member in members_capacity:
+                    activities.update(members_capacity[member].keys())
+                if member in work_by_member:
+                    activities.update(work_by_member[member].keys())
+                
+                # Aktivite bazında göster
+                for activity in sorted(activities):
+                    capacity = members_capacity.get(member, {}).get(activity, 0)
+                    planned = work_by_member.get(member, {}).get(activity, 0)
+                    
+                    if capacity > 0 or planned > 0:
+                        utilization = (planned / capacity * 100) if capacity > 0 else 0
+                        
+                        # Renk kodu
+                        if utilization > 100:
+                            utilization_str = f"{Colors.RED}{utilization:.1f}%{Colors.RESET}"
+                        elif utilization > 90:
+                            utilization_str = f"{Colors.YELLOW}{utilization:.1f}%{Colors.RESET}"
+                        else:
+                            utilization_str = f"{utilization:.1f}%"
+                        
+                        print(f"{member:<25}{activity:<20}{capacity:>15.1f}{planned:>15.1f}{utilization_str:>25}")
+                        
+                        member_total_capacity += capacity
+                        member_total_planned += planned
+                
+                # Kişi toplamı
+                if member_total_capacity > 0 or member_total_planned > 0:
+                    total_utilization = (member_total_planned / member_total_capacity * 100) if member_total_capacity > 0 else 0
+                    
+                    if total_utilization > 100:
+                        total_util_str = f"{Colors.RED}{Colors.BOLD}{total_utilization:.1f}%{Colors.RESET}"
+                    elif total_utilization > 90:
+                        total_util_str = f"{Colors.YELLOW}{Colors.BOLD}{total_utilization:.1f}%{Colors.RESET}"
+                    else:
+                        total_util_str = f"{Colors.BOLD}{total_utilization:.1f}%{Colors.RESET}"
+                    
+                    print(f"{'':<25}{Colors.BOLD}{'TOPLAM':<20}{member_total_capacity:>15.1f}{member_total_planned:>15.1f}{total_util_str:>25}")
+                    print("-" * 90)
+        
+        except Exception as e:
+            print(f"❌ {sprint_name} kişi bazında analiz edilemedi: {e}")
+
 # Ana akış
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Azure DevOps Sprint Analysis')
     parser.add_argument('sprints', nargs='?', default='51', 
                        help='Sprint number or range (e.g., "51" or "50-55")')
+    parser.add_argument('--report', choices=['default', 'capacity', 'trend', 'workitem-types', 'all'], 
+                       default='default',
+                       help='Report type to generate')
     
     args = parser.parse_args()
     
@@ -331,118 +485,130 @@ if __name__ == "__main__":
     # Sprint aralığını parse et
     sprint_numbers = parse_sprint_range(args.sprints)
     print(f"📋 Analiz edilecek sprintler: {sprint_numbers}")
+    print(f"📊 Rapor türü: {args.report}")
     
-    # Tüm sonuçları topla
-    all_results = []
+    # Sadece capacity raporu isteniyorsa
+    if args.report == 'capacity':
+        generate_capacity_report(sprint_numbers, [])
+        exit(0)
     
-    for sprint_num in sprint_numbers:
-        sprint_name = f"Sprint {sprint_num}"
-        sprint_name, capacity_data, work_data = analyze_sprint(sprint_name)
+    # Varsayılan rapor (mevcut analiz)
+    if args.report in ['default', 'all']:
+        # Tüm sonuçları topla
+        all_results = []
         
-        # Her aktivite için sonuçları kaydet
-        activities = sorted(set(capacity_data.keys()).union(work_data.keys()))
-        for activity in activities:
-            planned = round(work_data.get(activity, 0), 1)
-            capacity = round(capacity_data.get(activity, 0) * settings['working_days'], 1)
-            resource_need = max(0, planned - capacity)  # Sadece pozitif değerler
-            all_results.append({
-                'Sprint': sprint_name,
-                'Activity': activity,
-                'Planned Work (h)': planned,
-                'Capacity (h)': capacity,
-                'Resource Need (h)': resource_need
-            })
-    
-    # Sonuçları yazdır
-    print(f"\n📋 Sprint Analiz Özeti:\n")
-    print(f"{'Sprint':<15}{'Activity':<20}{'Planned Work (h)':>20}{'Capacity (h)':>20}{'Resource Need (h)':>20}")
-    print("-" * 95)
-    
-    for result in all_results:
-        resource_need = result['Resource Need (h)']
-        if resource_need > 0:
-            # Kırmızı renkte göster eğer kaynak ihtiyacı varsa
-            resource_need_str = f"{Colors.RED}{resource_need:.1f}{Colors.RESET}"
-        else:
-            resource_need_str = f"{resource_need:.1f}"
+        for sprint_num in sprint_numbers:
+            sprint_name = f"Sprint {sprint_num}"
+            sprint_name, capacity_data, work_data = analyze_sprint(sprint_name)
             
-        print(f"{result['Sprint']:<15}{result['Activity']:<20}{result['Planned Work (h)']:>20}{result['Capacity (h)']:>20}{resource_need_str:>30}")
-        
-    # Özet istatistikler
-    if all_results:
-        print(f"\n📊 Genel Özet:")
-        total_planned = sum(r['Planned Work (h)'] for r in all_results)
-        total_capacity = sum(r['Capacity (h)'] for r in all_results)
-        total_resource_need = sum(r['Resource Need (h)'] for r in all_results)
-        print(f"Toplam Planlanan İş: {total_planned:.1f} saat")
-        print(f"Toplam Kapasite: {total_capacity:.1f} saat")
-        print(f"Kapasite Kullanım Oranı: {(total_planned/total_capacity*100) if total_capacity > 0 else 0:.1f}%")
-        if total_resource_need > 0:
-            print(f"{Colors.RED}Toplam Kaynak İhtiyacı: {total_resource_need:.1f} saat{Colors.RESET}")
-        else:
-            print(f"{Colors.GREEN}✅ Kaynak ihtiyacı yok - kapasite yeterli{Colors.RESET}")
-        
-        # Sprint bazında kaynak ihtiyaçları özeti
-        print(f"\n🚨 Sprint Bazında Kaynak İhtiyaçları:")
-        
-        # Sprint bazında grupla
-        sprint_needs = {}
-        for result in all_results:
-            if result['Resource Need (h)'] > 0:  # Sadece ihtiyaç olanları göster
-                sprint = result['Sprint']
-                if sprint not in sprint_needs:
-                    sprint_needs[sprint] = []
-                sprint_needs[sprint].append({
-                    'Activity': result['Activity'],
-                    'Need': result['Resource Need (h)']
+            # Her aktivite için sonuçları kaydet
+            activities = sorted(set(capacity_data.keys()).union(work_data.keys()))
+            for activity in activities:
+                planned = round(work_data.get(activity, 0), 1)
+                capacity = round(capacity_data.get(activity, 0) * settings['working_days'], 1)
+                resource_need = max(0, planned - capacity)  # Sadece pozitif değerler
+                all_results.append({
+                    'Sprint': sprint_name,
+                    'Activity': activity,
+                    'Planned Work (h)': planned,
+                    'Capacity (h)': capacity,
+                    'Resource Need (h)': resource_need
                 })
         
-        if sprint_needs:
-            print(f"{'Sprint':<15}{'Activity':<20}{'İhtiyaç (saat)':>15}")
-            print("-" * 50)
-            
-            for sprint in sorted(sprint_needs.keys()):
-                # Sprint başına toplam ihtiyaç
-                sprint_total = sum(item['Need'] for item in sprint_needs[sprint])
-                print(f"\n{Colors.BOLD}{sprint:<15}{'TOPLAM':<20}{Colors.RED}{sprint_total:.1f}{Colors.RESET}")
-                
-                # Aktivite bazında detaylar
-                for item in sorted(sprint_needs[sprint], key=lambda x: x['Need'], reverse=True):
-                    print(f"{'':>15}{item['Activity']:<20}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
-        else:
-            print(f"{Colors.GREEN}✅ Hiçbir sprintte kaynak ihtiyacı yok!{Colors.RESET}")
+        # Sonuçları yazdır
+        print(f"\n📋 Sprint Analiz Özeti:\n")
+        print(f"{'Sprint':<15}{'Activity':<20}{'Planned Work (h)':>20}{'Capacity (h)':>20}{'Resource Need (h)':>20}")
+        print("-" * 95)
         
-        # Aktivite bazında kaynak ihtiyaçları özeti
-        print(f"\n📊 Aktivite Bazında Kaynak İhtiyaçları:")
-        
-        # Aktivite bazında grupla
-        activity_needs = {}
         for result in all_results:
-            if result['Resource Need (h)'] > 0:  # Sadece ihtiyaç olanları göster
-                activity = result['Activity']
-                if activity not in activity_needs:
-                    activity_needs[activity] = []
-                activity_needs[activity].append({
-                    'Sprint': result['Sprint'],
-                    'Need': result['Resource Need (h)']
-                })
-        
-        if activity_needs:
-            print(f"{'Activity':<20}{'Sprint':<15}{'İhtiyaç (saat)':>15}")
-            print("-" * 50)
-            
-            # Toplam ihtiyaca göre aktiviteleri sırala
-            activity_totals = {}
-            for activity, items in activity_needs.items():
-                activity_totals[activity] = sum(item['Need'] for item in items)
-            
-            for activity in sorted(activity_totals.keys(), key=lambda x: activity_totals[x], reverse=True):
-                # Aktivite başına toplam ihtiyaç
-                activity_total = activity_totals[activity]
-                print(f"\n{Colors.BOLD}{activity:<20}{'TOPLAM':<15}{Colors.RED}{activity_total:.1f}{Colors.RESET}")
+            resource_need = result['Resource Need (h)']
+            if resource_need > 0:
+                # Kırmızı renkte göster eğer kaynak ihtiyacı varsa
+                resource_need_str = f"{Colors.RED}{resource_need:.1f}{Colors.RESET}"
+            else:
+                resource_need_str = f"{resource_need:.1f}"
                 
-                # Sprint bazında detaylar (ihtiyaca göre sıralı)
-                for item in sorted(activity_needs[activity], key=lambda x: x['Need'], reverse=True):
-                    print(f"{'':>20}{item['Sprint']:<15}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
-        else:
-            print(f"{Colors.GREEN}✅ Hiçbir aktivitede kaynak ihtiyacı yok!{Colors.RESET}")
+            print(f"{result['Sprint']:<15}{result['Activity']:<20}{result['Planned Work (h)']:>20}{result['Capacity (h)']:>20}{resource_need_str:>30}")
+            
+        # Özet istatistikler
+        if all_results:
+            print(f"\n📊 Genel Özet:")
+            total_planned = sum(r['Planned Work (h)'] for r in all_results)
+            total_capacity = sum(r['Capacity (h)'] for r in all_results)
+            total_resource_need = sum(r['Resource Need (h)'] for r in all_results)
+            print(f"Toplam Planlanan İş: {total_planned:.1f} saat")
+            print(f"Toplam Kapasite: {total_capacity:.1f} saat")
+            print(f"Kapasite Kullanım Oranı: {(total_planned/total_capacity*100) if total_capacity > 0 else 0:.1f}%")
+            if total_resource_need > 0:
+                print(f"{Colors.RED}Toplam Kaynak İhtiyacı: {total_resource_need:.1f} saat{Colors.RESET}")
+            else:
+                print(f"{Colors.GREEN}✅ Kaynak ihtiyacı yok - kapasite yeterli{Colors.RESET}")
+            
+            # Sprint bazında kaynak ihtiyaçları özeti
+            print(f"\n🚨 Sprint Bazında Kaynak İhtiyaçları:")
+            
+            # Sprint bazında grupla
+            sprint_needs = {}
+            for result in all_results:
+                if result['Resource Need (h)'] > 0:  # Sadece ihtiyaç olanları göster
+                    sprint = result['Sprint']
+                    if sprint not in sprint_needs:
+                        sprint_needs[sprint] = []
+                    sprint_needs[sprint].append({
+                        'Activity': result['Activity'],
+                        'Need': result['Resource Need (h)']
+                    })
+            
+            if sprint_needs:
+                print(f"{'Sprint':<15}{'Activity':<20}{'İhtiyaç (saat)':>15}")
+                print("-" * 50)
+                
+                for sprint in sorted(sprint_needs.keys()):
+                    # Sprint başına toplam ihtiyaç
+                    sprint_total = sum(item['Need'] for item in sprint_needs[sprint])
+                    print(f"\n{Colors.BOLD}{sprint:<15}{'TOPLAM':<20}{Colors.RED}{sprint_total:.1f}{Colors.RESET}")
+                    
+                    # Aktivite bazında detaylar
+                    for item in sorted(sprint_needs[sprint], key=lambda x: x['Need'], reverse=True):
+                        print(f"{'':>15}{item['Activity']:<20}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
+            else:
+                print(f"{Colors.GREEN}✅ Hiçbir sprintte kaynak ihtiyacı yok!{Colors.RESET}")
+            
+            # Aktivite bazında kaynak ihtiyaçları özeti
+            print(f"\n📊 Aktivite Bazında Kaynak İhtiyaçları:")
+            
+            # Aktivite bazında grupla
+            activity_needs = {}
+            for result in all_results:
+                if result['Resource Need (h)'] > 0:  # Sadece ihtiyaç olanları göster
+                    activity = result['Activity']
+                    if activity not in activity_needs:
+                        activity_needs[activity] = []
+                    activity_needs[activity].append({
+                        'Sprint': result['Sprint'],
+                        'Need': result['Resource Need (h)']
+                    })
+            
+            if activity_needs:
+                print(f"{'Activity':<20}{'Sprint':<15}{'İhtiyaç (saat)':>15}")
+                print("-" * 50)
+                
+                # Toplam ihtiyaca göre aktiviteleri sırala
+                activity_totals = {}
+                for activity, items in activity_needs.items():
+                    activity_totals[activity] = sum(item['Need'] for item in items)
+                
+                for activity in sorted(activity_totals.keys(), key=lambda x: activity_totals[x], reverse=True):
+                    # Aktivite başına toplam ihtiyaç
+                    activity_total = activity_totals[activity]
+                    print(f"\n{Colors.BOLD}{activity:<20}{'TOPLAM':<15}{Colors.RED}{activity_total:.1f}{Colors.RESET}")
+                    
+                    # Sprint bazında detaylar (ihtiyaca göre sıralı)
+                    for item in sorted(activity_needs[activity], key=lambda x: x['Need'], reverse=True):
+                        print(f"{'':>20}{item['Sprint']:<15}{Colors.RED}{item['Need']:.1f}{Colors.RESET}")
+            else:
+                print(f"{Colors.GREEN}✅ Hiçbir aktivitede kaynak ihtiyacı yok!{Colors.RESET}")
+    
+    # Capacity raporu da isteniyorsa
+    if args.report == 'all':
+        generate_capacity_report(sprint_numbers, all_results)
